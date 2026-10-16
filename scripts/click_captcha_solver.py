@@ -145,8 +145,9 @@ class ClickCaptchaSolver:
                     {"role": "system", "content": "Output valid JSON only. No markdown, no explanation."},
                     {"role": "user", "content": content},
                 ],
-                max_tokens=4096,
+                max_tokens=16384,
                 response_format={"type": "json_object"},
+                **const.build_llm_extra_kwargs(),
             )
             output = response.choices[0].message.content or ""
             logger.info(f"大模型响应: {output[:400]}")

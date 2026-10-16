@@ -16,6 +16,8 @@ import re
 import time
 import random
 
+import const
+
 logger = logging.getLogger(__name__)
 
 _WIDGET_SELECTORS = [
@@ -266,7 +268,8 @@ def solve_text_sequence_captcha(page, login_url, retry_limit=5) -> bool:
                                 {"type": "text", "text": prompt},
                             ]},
                         ],
-                        max_tokens=300,
+                        max_tokens=2048,
+                        **const.build_llm_extra_kwargs(),
                     )
                     result_text = resp.choices[0].message.content or ""
                     logger.info(f"LLM: {result_text[:200]}")

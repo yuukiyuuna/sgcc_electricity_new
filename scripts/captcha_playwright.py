@@ -245,7 +245,8 @@ def _solve_slider(page: Page, selectors: dict) -> bool:
                     )},
                 ],
             }],
-            max_tokens=50,
+            max_tokens=512,
+            **const.build_llm_extra_kwargs(),
         )
 
         output = response.choices[0].message.content or ""

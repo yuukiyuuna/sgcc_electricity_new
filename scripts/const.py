@@ -41,3 +41,17 @@ def get_data_dir() -> str:
     os.makedirs(data_dir, exist_ok=True)
     return data_dir
 
+
+def build_llm_extra_kwargs() -> dict:
+    """构建各家 LLM 所需的额外请求参数。
+
+    DeepSeek 思考模式默认开启，思维链(reasoning_content)与最终回答(content)
+    共用 max_tokens 预算，容易导致 content 返回空字符串、验证码识别失败。
+    因此仅针对 DeepSeek 关闭思考模式；其他 OpenAI 兼容服务商（如硅基流动 Qwen）
+    不认识该参数，故不下发，避免报错。
+    """
+    base_url = (os.getenv('LLM_BASE_URL') or LLM_BASE_URL or '').lower()
+    if 'deepseek' in base_url:
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    return {}
+
