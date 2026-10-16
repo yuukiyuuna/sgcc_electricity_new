@@ -24,20 +24,6 @@ from captcha_playwright import solve_captcha_in_browser
 from captcha_text_sequence import solve_text_sequence_captcha
 import vue_state
 
-# CloakBrowser: C++ 源码级隐身 Chromium，Playwright 的 drop-in 替代
-# 延迟导入，避免 DEBUG_MODE 下无意义的联网更新检查
-_cloak_launch = None
-_HAS_CLOAKBROWSER = None
-
-def _get_cloak_launch():
-    global _cloak_launch, _HAS_CLOAKBROWSER
-    if _HAS_CLOAKBROWSER is None:
-        try:
-            from cloakbrowser import launch as _cloak_launch
-            _HAS_CLOAKBROWSER = True
-        except ImportError:
-            _HAS_CLOAKBROWSER = False
-    return _cloak_launch if _HAS_CLOAKBROWSER else None
 
 class DataFetcher:
 
@@ -147,7 +133,6 @@ class DataFetcher:
             logging.info(f"CDP 连接成功，真实 UA: {browser_ua[:60]}...")
 
         # ── 标准启动模式 ──
-        cloak_mode = False
         if not cdp_mode:
             # headless 逻辑：无显示器时自动 headless（兼容 xvfb 和无 xvfb 两种 Docker 环境）
             headless = False
@@ -158,106 +143,56 @@ class DataFetcher:
                 headless = False
                 logging.info("DEBUG_MODE: 显示浏览器窗口，可观察完整操作过程")
 
-            # ── 优先使用 CloakBrowser（C++ 源码级隐身 Chromium） ──
-            # DEBUG_MODE 本机调试时跳过 CloakBrowser，使用标准 Playwright 更稳定
-            use_cloak = (
-                os.environ.get("PYTHON_IN_DOCKER") is None
-                and os.getenv("DEBUG_MODE", "false").lower() != "true"
+            # ── 标准 Playwright Chromium ──
+            if self._pw is None:
+                self._pw = sync_playwright().start()
+            if not browser_ua:
+                browser_ua = self._get_chrome_user_agent()
+                logging.info("Playwright UA: " + browser_ua[:50] + "...")
+
+            args = [
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--disable-extensions",
+                "--disable-default-apps",
+                "--disable-background-networking",
+                "--disable-sync",
+                "--disable-translate",
+                "--metrics-recording-only",
+                "--no-first-run",
+                "--disable-client-side-phishing-detection",
+                "--disable-crash-reporter",
+                "--disable-domain-reliability",
+                "--disable-component-update",
+                f"--window-size={vw},{vh}",
+            ]
+            if os.environ.get("PYTHON_IN_DOCKER") is not None:
+                args.extend([
+                    "--disable-gpu",
+                    "--use-gl=swiftshader",
+                    "--disable-software-rasterizer",
+                    "--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process",
+                    "--lang=zh-CN",
+                ])
+            if headless:
+                args.append("--headless=new")
+
+            # 使用 launch_persistent_context 确保只有一个浏览器窗口
+            # （launch + new_context 在非 headless 模式下会产生额外窗口）
+            self._context = self._pw.chromium.launch_persistent_context(
+                user_data_dir="",
+                headless=headless,
+                args=args,
+                viewport={"width": vw, "height": vh},
+                user_agent=browser_ua,
+                locale=primary_lang.replace("-", "_"),
+                timezone_id="Asia/Shanghai",
+                device_scale_factor=device_scale,
+                no_viewport=False,
             )
-            if use_cloak:
-                cloak_fn = _get_cloak_launch()
-                if cloak_fn:
-                    try:
-                        logging.info("使用 CloakBrowser 启动隐身浏览器...")
-                        self._browser = cloak_fn(
-                            headless=headless,
-                            timezone="Asia/Shanghai",
-                            locale=primary_lang,
-                            humanize=False,
-                        )
-                        self._context = self._browser.new_context(
-                            viewport={"width": vw, "height": vh},
-                            locale=primary_lang.replace("-", "_"),
-                            timezone_id="Asia/Shanghai",
-                            device_scale_factor=device_scale,
-                            is_mobile=False,
-                            has_touch=False,
-                            extra_http_headers={"Accept-Language": browser_lang},
-                        )
-                        # 不设置 user_agent —— CloakBrowser 的 C++ 级指纹已覆盖
-                        if not browser_ua:
-                            _tmp_page = self._browser.new_page()
-                            try:
-                                browser_ua = _tmp_page.evaluate("() => navigator.userAgent")
-                                logging.info("CloakBrowser UA: " + browser_ua[:60] + "...")
-                            finally:
-                                _tmp_page.close()
-                        cloak_mode = True
-                        # CloakBrowser 内部管理 Playwright 实例，外部不需要 stop()
-                        self._pw = None
-                        logging.info("CloakBrowser 启动成功")
-                    except Exception as e:
-                        logging.warning(f"CloakBrowser 启动失败，回退到 Playwright: {e}")
-                        try:
-                            if hasattr(self, '_browser') and self._browser is not None:
-                                self._browser.close()
-                        except Exception:
-                            pass
-                        self._browser = None
-                        self._context = None
-                        self._pw = sync_playwright().start()
-
-            # ── 回退：标准 Playwright Chromium ──
-            if not cloak_mode:
-                if self._pw is None:
-                    self._pw = sync_playwright().start()
-                if not browser_ua:
-                    browser_ua = self._get_chrome_user_agent()
-                    logging.info("Playwright UA: " + browser_ua[:50] + "...")
-
-                args = [
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-infobars",
-                    "--disable-extensions",
-                    "--disable-default-apps",
-                    "--disable-background-networking",
-                    "--disable-sync",
-                    "--disable-translate",
-                    "--metrics-recording-only",
-                    "--no-first-run",
-                    "--disable-client-side-phishing-detection",
-                    "--disable-crash-reporter",
-                    "--disable-domain-reliability",
-                    "--disable-component-update",
-                    f"--window-size={vw},{vh}",
-                ]
-                if os.environ.get("PYTHON_IN_DOCKER") is not None:
-                    args.extend([
-                        "--disable-gpu",
-                        "--use-gl=swiftshader",
-                        "--disable-software-rasterizer",
-                        "--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process",
-                        "--lang=zh-CN",
-                    ])
-                if headless:
-                    args.append("--headless=new")
-
-                # 使用 launch_persistent_context 确保只有一个浏览器窗口
-                # （launch + new_context 在非 headless 模式下会产生额外窗口）
-                self._context = self._pw.chromium.launch_persistent_context(
-                    user_data_dir="",
-                    headless=headless,
-                    args=args,
-                    viewport={"width": vw, "height": vh},
-                    user_agent=browser_ua,
-                    locale=primary_lang.replace("-", "_"),
-                    timezone_id="Asia/Shanghai",
-                    device_scale_factor=device_scale,
-                    no_viewport=False,
-                )
-                self._browser = self._context.browser
+            self._browser = self._context.browser
 
         # ── 以下为两种模式共享的反检测设置 ──
 
@@ -307,18 +242,6 @@ class DataFetcher:
                 "})();"
             )
             logging.info("CDP 模式: 使用精简反检测脚本 (仅隐藏自动化痕迹)")
-        elif cloak_mode:
-            # CloakBrowser 模式：C++ 级指纹已覆盖，不要覆盖任何指纹属性！
-            # CloakBrowser 原生 webdriver=false (boolean)，不要改成 undefined
-            # 只需隐藏 Playwright 运行时痕迹
-            init_js = (
-                "(() => {"
-                # --- 隐藏 Playwright 运行时痕迹（不碰 navigator 属性） ---
-                "delete window.__playwright;"
-                "delete window.__pw_manual;"
-                "})();"
-            )
-            logging.info("CloakBrowser 模式: 使用最小化脚本 (仅清理 Playwright 痕迹)")
         else:
             # 标准模式：完整的指纹伪装
             init_js = (
@@ -428,13 +351,12 @@ class DataFetcher:
             "})();"
         )
         self._context.add_init_script(init_js)
-        mode_name = "CDP" if cdp_mode else ("CloakBrowser" if cloak_mode else "标准")
+        mode_name = "CDP" if cdp_mode else "标准"
         logging.info(f"反检测 init_script 已注入 ({mode_name}模式)")
 
         # CDP-level UserAgentMetadata — keeps Sec-CH-UA-* headers consistent
         # CDP connect 模式：browser-level CDP session 可能不支持
-        # CloakBrowser 模式：C++ 级指纹已覆盖，不需要额外设置
-        if not cdp_mode and not cloak_mode:
+        if not cdp_mode:
             try:
                 cdp = self._browser.new_browser_cdp_session()
                 cdp.send("Network.setUserAgentOverride", {
@@ -476,7 +398,7 @@ class DataFetcher:
             _pages = self._context.pages
             self._page = _pages[0] if _pages else self._context.new_page()
             self._page.set_default_timeout(self.DRIVER_IMPLICITY_WAIT_TIME * 1000)
-            mode_label = "CloakBrowser" if cloak_mode else "standard"
+            mode_label = "standard"
             logging.info(f"Browser ready ({mode_label} + stealth)")
             # 非 CDP 模式：尝试加载已保存的 Cookie（已禁用）
             # self._load_cookies(self._context)
